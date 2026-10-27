@@ -1,26 +1,52 @@
+server:
+  port: 8081                     # not published; reachable only through the nginx gateway (8080)
 spring:
   application.name: planet-m-shop-backend
   datasource:
+    hikari.max-lifetime: 1500000   # ms; shorter than any proxy/DB idle timeout
     url: ${DB_URL:jdbc:postgresql://localhost:5432/planetm}
-    username: ${DB_USER:planetm}
-    password: ${DB_PASSWORD:change-me}
+    username: ${APP_DB_USER:planetm_app}        # restricted role created by V3; the app never runs as the owner
+    password: ${APP_DB_PASSWORD:change-me-app}
   jpa:
     hibernate.ddl-auto: validate
     open-in-view: false
+  profiles.default: dev                         # local runs get sample data; production sets SPRING_PROFILES_ACTIVE=prod
   flyway:
-    locations: filesystem:db/migrations
+    locations: filesystem:db/migrations         # real migrations only; sample data is added by the dev profile
+    user: ${DB_USER:planetm}                    # owner role: creates tables and the planetm_app role
+    password: ${DB_PASSWORD:change-me}
+    placeholders:
+      app_db_password: ${APP_DB_PASSWORD:change-me-app}
   data.redis:
     host: ${REDIS_HOST:localhost}
     port: ${REDIS_PORT:6379}
   cache:
     type: redis
     redis.time-to-live: 10m
+  cassandra:
+    contact-points: ${CASSANDRA_HOST:localhost}:9042
+    local-datacenter: datacenter1
+    keyspace-name: planetm
+    schema-action: none
 stripe:
   secret-key: ${STRIPE_SECRET_KEY:}
   webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
 planetm:
   payments:
     afterpay-countries: [US, CA, AU, NZ, GB]
+  idempotency:
+    in-progress-ttl: 60s
+    completed-ttl: 24h
+  cart-cache-ttl: 7d
+  reservation-minutes: 35
+  stripe-session-minutes: 30
+  outbox:
+    poll-interval-ms: 1000
+    batch-size: 100
+  security:
+    jwt-secret: ${JWT_SECRET:}
+    access-token-minutes: 15
+    refresh-token-days: 7
 springdoc:
   api-docs.path: /v3/api-docs
   swagger-ui.path: /swagger-ui.html

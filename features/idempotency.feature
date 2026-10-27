@@ -1,5 +1,6 @@
 @backend
 Feature: Idempotent Place order and payment API
+  Idempotency records live in Redis; unique idempotency_key columns on orders and payments in Postgres are the backstop.
 
   Scenario: Missing Idempotency-Key
     When I place an order without an Idempotency-Key header
@@ -16,9 +17,30 @@ Feature: Idempotent Place order and payment API
     When I send a different payload with key "k1"
     Then the response status is 422
 
+  Scenario: In-progress marker blocks a concurrent duplicate
+    Given a request with key "k2" is in progress
+    When a second request with key "k2" arrives
+    Then the response status is 409
+
   Scenario: Concurrent duplicates
     When two requests with key "k2" arrive at the same time
     Then one proceeds and the other receives 409
+
+  Scenario: Redis record is stored with the right lifetimes
+    When an order is placed with key "k5"
+    Then the Redis record is in progress for at most 60 seconds and completed for 24 hours
+
+  Scenario: Redis was flushed
+    Given I placed an order with key "k6"
+    And the Redis idempotency record is gone
+    When I repeat the same request with key "k6"
+    Then the original order is returned from the unique idempotency_key in Postgres
+    And no second order is created
+
+  Scenario: Redis is down
+    Given Redis is unavailable
+    When I repeat a request with an existing key
+    Then no duplicate order or payment is created
 
   Scenario: Key is forwarded to Stripe
     When I create a checkout session with key "k3"

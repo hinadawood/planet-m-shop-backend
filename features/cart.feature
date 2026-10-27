@@ -1,5 +1,6 @@
 @backend
 Feature: Cart with inventory checks
+  The cart is stored in Postgres; Redis is a cache-aside copy.
 
   Background:
     Given product "LIV-CSH-45-OCH" has 5 units available
@@ -45,3 +46,26 @@ Feature: Cart with inventory checks
     When I add 1 of "LIV-CSH-45-OCH" to my cart
     And I add 1 of "DIN-RUN-180-NVY" to my cart
     Then the cart total is the sum of the line totals
+
+  Scenario: Cart is saved in Postgres
+    When I add 2 of "LIV-CSH-45-OCH" to my cart
+    Then the carts and cart_items tables contain the cart
+
+  Scenario: Cart survives a Redis flush
+    Given my cart contains 2 of "LIV-CSH-45-OCH"
+    And Redis is flushed
+    When I read my cart
+    Then the cart still contains 2 of "LIV-CSH-45-OCH"
+    And the cart cache is repopulated
+
+  Scenario: Cart cache is refreshed on every change and evicted on checkout
+    Given my cart is cached
+    When I change the cart
+    Then the cache holds the new contents
+    When I check out
+    Then the cart cache entry is evicted
+
+  Scenario: Guest cart merges into the account cart on login
+    Given a guest cart with 2 of "LIV-CSH-45-OCH" and an account cart with 2 of "LIV-CSH-45-OCH"
+    When the customer logs in and the carts are merged
+    Then the quantity is 4 capped at the available stock

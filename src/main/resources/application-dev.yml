@@ -1,0 +1,4 @@
+# Dev profile (default locally): also load the sample categories/products/stock from db/seed-dev.
+spring:
+  flyway:
+    locations: filesystem:db/migrations,filesystem:db/seed-dev

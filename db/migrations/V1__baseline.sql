@@ -1,4 +1,5 @@
 -- Planet-M Shop: full schema (PostgreSQL 16). Kept in sync with db/migrations by SchemaSyncTest.
+-- The planetm database itself is created by docker-compose (POSTGRES_DB); apply this file inside it.
 
 CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger AS $$
 BEGIN
@@ -15,9 +16,22 @@ CREATE TABLE customers (
     phone         VARCHAR(32),
     password_hash VARCHAR(255),
     is_guest      BOOLEAN      NOT NULL DEFAULT TRUE,
+    role          VARCHAR(10)  NOT NULL DEFAULT 'CUSTOMER' CHECK (role IN ('CUSTOMER', 'ADMIN')),
+    failed_login_attempts INTEGER NOT NULL DEFAULT 0,
+    locked_until  TIMESTAMPTZ,
     created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
+
+CREATE TABLE refresh_tokens (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    customer_id BIGINT       NOT NULL REFERENCES customers (id) ON DELETE CASCADE,
+    token_hash  CHAR(64)     NOT NULL UNIQUE,
+    expires_at  TIMESTAMPTZ  NOT NULL,
+    revoked_at  TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_refresh_tokens_customer ON refresh_tokens (customer_id);
 
 CREATE TABLE shipping_addresses (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -111,6 +125,8 @@ CREATE TABLE orders (
     currency               CHAR(3)        NOT NULL DEFAULT 'USD',
     placed_at              TIMESTAMPTZ    NOT NULL DEFAULT now(),
     reservation_expires_at TIMESTAMPTZ,
+    idempotency_key        VARCHAR(64) UNIQUE,
+    version                BIGINT         NOT NULL DEFAULT 0,
     created_at             TIMESTAMPTZ    NOT NULL DEFAULT now(),
     updated_at             TIMESTAMPTZ    NOT NULL DEFAULT now()
 );
@@ -142,6 +158,8 @@ CREATE TABLE payments (
     status                    VARCHAR(20)    NOT NULL DEFAULT 'INITIATED'
         CHECK (status IN ('INITIATED', 'SUCCEEDED', 'FAILED', 'EXPIRED', 'REFUNDED')),
     failure_reason            VARCHAR(500),
+    idempotency_key           VARCHAR(64) UNIQUE,
+    version                   BIGINT         NOT NULL DEFAULT 0,
     created_at                TIMESTAMPTZ    NOT NULL DEFAULT now(),
     updated_at                TIMESTAMPTZ    NOT NULL DEFAULT now()
 );
@@ -154,20 +172,6 @@ CREATE TABLE processed_stripe_events (
     processed_at    TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
-CREATE TABLE idempotency_keys (
-    idempotency_key VARCHAR(64)  PRIMARY KEY,
-    scope           VARCHAR(30)  NOT NULL CHECK (scope IN ('PLACE_ORDER', 'CREATE_PAYMENT_SESSION')),
-    owner_ref       VARCHAR(64),
-    request_hash    CHAR(64)     NOT NULL,
-    status          VARCHAR(20)  NOT NULL CHECK (status IN ('IN_PROGRESS', 'COMPLETED')),
-    response_status INTEGER,
-    response_body   JSONB,
-    order_id        BIGINT REFERENCES orders (id),
-    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    expires_at      TIMESTAMPTZ  NOT NULL DEFAULT now() + INTERVAL '24 hours'
-);
-CREATE INDEX idx_idempotency_keys_expires ON idempotency_keys (expires_at);
-
 CREATE TABLE inventory_movements (
     id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     product_id BIGINT      NOT NULL REFERENCES products (id),
@@ -177,6 +181,30 @@ CREATE TABLE inventory_movements (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_inventory_movements_product ON inventory_movements (product_id);
+
+CREATE TABLE payment_events (
+    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    payment_id      BIGINT       NOT NULL REFERENCES payments (id),
+    stripe_event_id VARCHAR(255),
+    event_type      VARCHAR(60)  NOT NULL,
+    from_status     VARCHAR(20),
+    to_status       VARCHAR(20),
+    payload         JSONB,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_payment_events_payment ON payment_events (payment_id);
+
+CREATE TABLE outbox_events (
+    id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    aggregate_type VARCHAR(30)  NOT NULL,
+    aggregate_id   VARCHAR(64)  NOT NULL,
+    event_type     VARCHAR(60)  NOT NULL,
+    payload        JSONB        NOT NULL,
+    created_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    published_at   TIMESTAMPTZ,
+    attempts       INTEGER      NOT NULL DEFAULT 0
+);
+CREATE INDEX idx_outbox_unpublished ON outbox_events (id) WHERE published_at IS NULL;
 
 -- updated_at triggers
 CREATE TRIGGER trg_customers_updated BEFORE UPDATE ON customers FOR EACH ROW EXECUTE FUNCTION set_updated_at();
